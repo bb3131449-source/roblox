@@ -1,4 +1,3 @@
-
 return function(ctx)
 local F, Bin, globalBin, commands, player = ctx.F, ctx.Bin, ctx.globalBin, ctx.commands, ctx.player
 local Debris, RunService, SoundService, Workspace = ctx.Debris, ctx.RunService, ctx.SoundService, ctx.Workspace
@@ -103,38 +102,35 @@ function F.psEnsureHeld(s)
 end
 
 function F.psClaimOwnership(hrp)
-	local ok = false
+	local claimed = false
+
 	pcall(function()
-		if typeof(sethiddenproperty) == "function" then
+		if typeof(sethiddenproperty) == "function" and typeof(gethiddenproperty) == "function" then
 			sethiddenproperty(hrp, "PhysicsRepRootPart", hrp)
+			local check = gethiddenproperty(hrp, "PhysicsRepRootPart")
+			if check == hrp then claimed = true end
 		end
 	end)
-	pcall(function()
-		hrp:SetNetworkOwner(player)
-		ok = true
-	end)
-	if not ok then
+
+	if not claimed then
+		pcall(function()
+			if typeof(sethiddenproperty) == "function" then
+				sethiddenproperty(hrp, "PhysicsRepRootPart", hrp)
+				claimed = true
+			end
+		end)
+	end
+
+	if not claimed then
 		pcall(function()
 			if typeof(setnetworkowner) == "function" then
 				setnetworkowner(hrp, player)
-				ok = true
+				claimed = true
 			end
 		end)
 	end
-	if not ok then
-		pcall(function()
-			if typeof(firetouchinterest) == "function" then
-				local myChar = player.Character
-				local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
-				if myHrp then
-					firetouchinterest(myHrp, hrp, 0)
-					firetouchinterest(myHrp, hrp, 1)
-					ok = true
-				end
-			end
-		end)
-	end
-	return ok
+
+	return claimed
 end
 
 function F.psFlingTarget(plr, pos, radius)
@@ -147,26 +143,39 @@ function F.psFlingTarget(plr, pos, radius)
 	if dist > radius then return false, "out_of_range" end
 
 	local claimed = F.psClaimOwnership(hrp)
+	if not claimed then return false, "no_ownership" end
 
-	local dir = hrp.Position - pos
-	if dir.Magnitude < 0.5 then dir = Vector3.new(0, 1, 0) end
-	dir = dir.Unit
-	local vel = dir * F.PS.FLING_FORCE + Vector3.new(0, F.PS.FLING_FORCE * F.PS.FLING_UP, 0)
+	local before = hrp.Position
+	local huge = Vector3.new(math.huge, math.huge, math.huge)
 
-	pcall(function() hrp.AssemblyLinearVelocity = vel end)
-	pcall(function() hrp.Velocity = vel end)
-	pcall(function() hrp.RotVelocity = Vector3.new(
-		math.random(-90, 90), math.random(-90, 90), math.random(-90, 90)
-	) end)
+	pcall(function() hrp.AssemblyLinearVelocity = huge end)
+	pcall(function() hrp.Velocity = huge end)
+	pcall(function() hrp.RotVelocity = huge end)
+	pcall(function() hrp.AssemblyAngularVelocity = huge end)
 
 	task.wait(F.PS.FLING_CHECK_DELAY)
 
 	if not hrp.Parent then return true, "gone" end
 
-	local post = hrp.AssemblyLinearVelocity.Magnitude
-	local target = vel.Magnitude
-	if post < target * F.PS.FLING_MIN_KEEP then
-		return false, claimed and "resisted" or "no_ownership"
+	local moved = (hrp.Position - before).Magnitude
+	if moved < 3 then
+		local dir = hrp.Position - pos
+		if dir.Magnitude < 0.5 then dir = Vector3.new(0, 1, 0) end
+		dir = dir.Unit
+		local vel = dir * F.PS.FLING_FORCE * 3 + Vector3.new(0, F.PS.FLING_FORCE * F.PS.FLING_UP * 2, 0)
+		local spin = Vector3.new(
+			math.random(-900, 900), math.random(-900, 900), math.random(-900, 900)
+		)
+		pcall(function() hrp.AssemblyLinearVelocity = vel end)
+		pcall(function() hrp.Velocity = vel end)
+		pcall(function() hrp.RotVelocity = spin end)
+		pcall(function() hrp.AssemblyAngularVelocity = spin end)
+		task.wait(F.PS.FLING_CHECK_DELAY)
+		if not hrp.Parent then return true, "gone" end
+		local moved2 = (hrp.Position - before).Magnitude
+		if moved2 < 8 then
+			return false, "resisted"
+		end
 	end
 	return true, "flung"
 end
@@ -179,7 +188,7 @@ function F.psFlingPlayers(pos, radius)
 			local ok, status = F.psFlingTarget(plr, pos, radius)
 			if ok then
 				flung += 1
-			elseif status == "resisted" or status == "no_ownership" then
+			elseif status == "resisted" then
 				PS.blacklist[plr] = true
 				blocked += 1
 			end
