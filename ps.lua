@@ -196,8 +196,6 @@ function F.psFlingPlayers(pos, radius)
 		hidden = {},
 		savedPos = myRoot.CFrame,
 		seatWas = true,
-		stab = nil,
-		stabRot = nil,
 		cleaned = false,
 		flung = 0,
 		blocked = 0,
@@ -206,6 +204,11 @@ function F.psFlingPlayers(pos, radius)
 	local function restoreAll()
 		if state.cleaned then return end
 		state.cleaned = true
+
+		-- якорь снимаем последним, когда всё остальное уже вернулось
+		if myRoot and myRoot.Parent then
+			pcall(function() myRoot.Anchored = false end)
+		end
 
 		for inst, t in pairs(state.hidden) do
 			if inst and inst.Parent then
@@ -234,9 +237,6 @@ function F.psFlingPlayers(pos, radius)
 		pcall(function()
 			Workspace.FallenPartsDestroyHeight = state.prevFallen
 		end)
-
-		if state.stab then pcall(function() state.stab:Destroy() end) end
-		if state.stabRot then pcall(function() state.stabRot:Destroy() end) end
 
 		F.cmdLog(("ps: flung %d, blacklisted %d"):format(state.flung or 0, state.blocked or 0))
 	end
@@ -279,6 +279,7 @@ function F.psFlingPlayers(pos, radius)
 		end
 	end)
 
+	-- фаза флинга: тело свободно, скорости уходят в контакт
 	local MAX = PS.FLING_MAX_TARGETS
 	for _, plr in ipairs(targets) do
 		if state.flung + state.blocked >= MAX then break end
@@ -295,33 +296,33 @@ function F.psFlingPlayers(pos, radius)
 		end
 	end
 
+	-- ФАЗА ВОЗВРАТА.
+	-- Anchored = true мгновенно отключает персонажа от физического солвера.
+	-- Вся накопленная инерция 9e8 аннулируется в один тик, без драк с MaxForce.
 	if myRoot.Parent then
+		myRoot.Anchored = true
 		myRoot.AssemblyLinearVelocity = Vector3.zero
 		myRoot.AssemblyAngularVelocity = Vector3.zero
-	end
 
-	local stab = Instance.new("BodyVelocity")
-	stab.Velocity = Vector3.zero
-	stab.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
-	stab.P = 1e6
-	pcall(function() stab.Parent = myRoot end)
-	state.stab = stab
-
-	local stabRot = Instance.new("BodyAngularVelocity")
-	stabRot.AngularVelocity = Vector3.zero
-	stabRot.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
-	stabRot.P = 1e6
-	pcall(function() stabRot.Parent = myRoot end)
-	state.stabRot = stabRot
-
-	local t1 = os.clock()
-	while not state.cleaned do
-		if not myRoot.Parent then break end
-		myRoot.CFrame = state.savedPos
 		pcall(function() myChar:PivotTo(state.savedPos) end)
-		if (myRoot.Position - state.savedPos.Position).Magnitude < 5 then break end
-		if os.clock() - t1 > 3 then break end
-		task.wait()
+		myRoot.CFrame = state.savedPos
+		myRoot.AssemblyLinearVelocity = Vector3.zero
+		myRoot.AssemblyAngularVelocity = Vector3.zero
+
+		-- держим якорь четверть секунды: клиент и сервер синхронизируют позицию
+		local holdStart = os.clock()
+		while os.clock() - holdStart < 0.25 do
+			if not myRoot.Parent then break end
+			myRoot.CFrame = state.savedPos
+			myRoot.AssemblyLinearVelocity = Vector3.zero
+			myRoot.AssemblyAngularVelocity = Vector3.zero
+			RunService.Heartbeat:Wait()
+		end
+
+		-- снимаем якорь уже на нулевых скоростях
+		myRoot.AssemblyLinearVelocity = Vector3.zero
+		myRoot.AssemblyAngularVelocity = Vector3.zero
+		myRoot.Anchored = false
 	end
 
 	if deadConn then deadConn:Disconnect() end
