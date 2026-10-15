@@ -189,77 +189,153 @@ function F.psFlingPlayers(pos, radius)
 		return
 	end
 
-	local cam = Workspace.CurrentCamera
-	local sType, sSubj, sCF
-	if cam then
-		sType, sSubj, sCF = cam.CameraType, cam.CameraSubject, cam.CFrame
-		cam.CameraType = Enum.CameraType.Scriptable
-		cam.CFrame = sCF
+	local state = {
+		cam = Workspace.CurrentCamera,
+		sType = nil, sSubj = nil, sCF = nil,
+		prevFallen = Workspace.FallenPartsDestroyHeight,
+		hidden = {},
+		savedPos = myRoot.CFrame,
+		seatWas = true,
+		stab = nil,
+		stabRot = nil,
+		cleaned = false,
+		flung = 0,
+		blocked = 0,
+	}
+
+	local function restoreAll()
+		if state.cleaned then return end
+		state.cleaned = true
+
+		for inst, t in pairs(state.hidden) do
+			if inst and inst.Parent then
+				pcall(function() inst.Transparency = t end)
+			end
+		end
+
+		if state.cam then
+			pcall(function()
+				state.cam.CameraType = state.sType or Enum.CameraType.Custom
+			end)
+			if state.sSubj then
+				pcall(function() state.cam.CameraSubject = state.sSubj end)
+			end
+			if state.sCF then
+				pcall(function() state.cam.CFrame = state.sCF end)
+			end
+		end
+
+		if myHum and myHum.Parent then
+			pcall(function()
+				myHum:SetStateEnabled(Enum.HumanoidStateType.Seated, state.seatWas)
+			end)
+		end
+
+		pcall(function()
+			Workspace.FallenPartsDestroyHeight = state.prevFallen
+		end)
+
+		if state.stab then pcall(function() state.stab:Destroy() end) end
+		if state.stabRot then pcall(function() state.stabRot:Destroy() end) end
+
+		F.cmdLog(("ps: flung %d, blacklisted %d"):format(state.flung or 0, state.blocked or 0))
 	end
 
-	local prevFallen = Workspace.FallenPartsDestroyHeight
-	pcall(function() Workspace.FallenPartsDestroyHeight = -9e9 end)
+	for _, d in ipairs(myChar:GetDescendants()) do
+		if d:IsA("BasePart") or d:IsA("Decal") then
+			state.hidden[d] = d.Transparency
+			d.Transparency = 1
+		end
+	end
+
+	if state.cam then
+		state.sType, state.sSubj, state.sCF = state.cam.CameraType, state.cam.CameraSubject, state.cam.CFrame
+		state.cam.CameraType = Enum.CameraType.Scriptable
+		state.cam.CFrame = state.sCF
+	end
+
+	pcall(function()
+		Workspace.FallenPartsDestroyHeight = -9e9
+	end)
 
 	local stab = Instance.new("BodyVelocity")
 	stab.Velocity = Vector3.zero
 	stab.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
 	stab.P = 1e6
 	pcall(function() stab.Parent = myRoot end)
+	state.stab = stab
 
 	local stabRot = Instance.new("BodyAngularVelocity")
 	stabRot.AngularVelocity = Vector3.zero
 	stabRot.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
 	stabRot.P = 1e6
 	pcall(function() stabRot.Parent = myRoot end)
+	state.stabRot = stabRot
 
-	local savedPos = myRoot.CFrame
-	local seatWas = true
-	pcall(function() seatWas = myHum:GetStateEnabled(Enum.HumanoidStateType.Seated) end)
-	pcall(function() myHum:SetStateEnabled(Enum.HumanoidStateType.Seated, false) end)
+	pcall(function()
+		state.seatWas = myHum:GetStateEnabled(Enum.HumanoidStateType.Seated)
+	end)
+	pcall(function()
+		myHum:SetStateEnabled(Enum.HumanoidStateType.Seated, false)
+	end)
 
-	local flung, blocked = 0, 0
+	local deadConn
+	deadConn = myHum.Died:Connect(function()
+		restoreAll()
+		if deadConn then deadConn:Disconnect() end
+	end)
+
+	local charGoneConn
+	charGoneConn = myChar.AncestryChanged:Connect(function(_, parent)
+		if not parent then
+			restoreAll()
+			if charGoneConn then charGoneConn:Disconnect() end
+		end
+	end)
+
 	local MAX = PS.FLING_MAX_TARGETS
 	for _, plr in ipairs(targets) do
-		if flung + blocked >= MAX then break end
+		if state.flung + state.blocked >= MAX then break end
+		if state.cleaned then break end
+
 		local ok, res = pcall(F.psFlingOne, plr)
 		if ok and res == true then
-			flung += 1
+			state.flung += 1
 			F.cmdLog("ps " .. plr.Name .. ": flung")
 		else
 			PS.blacklist[plr] = true
-			blocked += 1
+			state.blocked += 1
 			F.cmdLog("ps " .. plr.Name .. ": blocked (" .. tostring(res) .. ")")
 		end
 	end
 
-	if cam then
-		cam.CameraType = sType or Enum.CameraType.Custom
-		if sSubj then pcall(function() cam.CameraSubject = sSubj end) end
-		pcall(function() cam.CFrame = sCF end)
-	end
-
-	myRoot.AssemblyLinearVelocity = Vector3.zero
-	myRoot.AssemblyAngularVelocity = Vector3.zero
-
-	local t1 = os.clock()
-	repeat
-		myRoot.CFrame = savedPos
+	if myRoot.Parent then
 		myRoot.AssemblyLinearVelocity = Vector3.zero
 		myRoot.AssemblyAngularVelocity = Vector3.zero
-		pcall(function() myChar:PivotTo(savedPos) end)
-		task.wait()
-	until (myRoot.Position - savedPos.Position).Magnitude < 25 or os.clock() - t1 > 3
+	end
 
-	myRoot.AssemblyLinearVelocity = Vector3.zero
-	myRoot.AssemblyAngularVelocity = Vector3.zero
+	local t1 = os.clock()
+	while not state.cleaned do
+		if not myRoot.Parent then break end
+		myRoot.CFrame = state.savedPos
+		myRoot.AssemblyLinearVelocity = Vector3.zero
+		myRoot.AssemblyAngularVelocity = Vector3.zero
+		pcall(function() myChar:PivotTo(state.savedPos) end)
+		if (myRoot.Position - state.savedPos.Position).Magnitude < 25 then break end
+		if os.clock() - t1 > 3 then break end
+		task.wait()
+	end
+
+	if myRoot.Parent then
+		myRoot.AssemblyLinearVelocity = Vector3.zero
+		myRoot.AssemblyAngularVelocity = Vector3.zero
+	end
 	task.wait()
 
-	pcall(function() stab:Destroy() end)
-	pcall(function() stabRot:Destroy() end)
-	pcall(function() myHum:SetStateEnabled(Enum.HumanoidStateType.Seated, seatWas) end)
-	pcall(function() Workspace.FallenPartsDestroyHeight = prevFallen end)
+	if deadConn then deadConn:Disconnect() end
+	if charGoneConn then charGoneConn:Disconnect() end
 
-	F.cmdLog(("ps: flung %d, blacklisted %d"):format(flung, blocked))
+	restoreAll()
 end
 
 function F.psExplode(ground, normal)
@@ -548,13 +624,6 @@ function F.psBomb(bin, folder, clone, startCF, restCF, ground, normal)
 	local function beep(i)
 		if bin.dead then return end
 		F.psSound(PS.BEEP_SOUND, PS.BEEP_VOLUME, 0.9 + i * 0.14, anchor)
-		glow.Transparency = 0.05
-		glow.Size = Vector3.new(1.5, 1.5, 1.5)
-		light.Brightness = 4
-		if hl then hl.FillTransparency = 0.2 end
-		F.play(bin, glow, 0.22, { Transparency = 0.7, Size = Vector3.new(0.6, 0.6, 0.6) })
-		F.play(bin, light, 0.22, { Brightness = 0.3 })
-		if hl then F.play(bin, hl, 0.22, { FillTransparency = 0.85 }) end
 	end
 
 	local fuseStart = os.clock()
