@@ -258,20 +258,6 @@ function F.psFlingPlayers(pos, radius)
 		Workspace.FallenPartsDestroyHeight = -9e9
 	end)
 
-	local stab = Instance.new("BodyVelocity")
-	stab.Velocity = Vector3.zero
-	stab.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
-	stab.P = 1e6
-	pcall(function() stab.Parent = myRoot end)
-	state.stab = stab
-
-	local stabRot = Instance.new("BodyAngularVelocity")
-	stabRot.AngularVelocity = Vector3.zero
-	stabRot.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
-	stabRot.P = 1e6
-	pcall(function() stabRot.Parent = myRoot end)
-	state.stabRot = stabRot
-
 	pcall(function()
 		state.seatWas = myHum:GetStateEnabled(Enum.HumanoidStateType.Seated)
 	end)
@@ -314,23 +300,29 @@ function F.psFlingPlayers(pos, radius)
 		myRoot.AssemblyAngularVelocity = Vector3.zero
 	end
 
+	local stab = Instance.new("BodyVelocity")
+	stab.Velocity = Vector3.zero
+	stab.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+	stab.P = 1e6
+	pcall(function() stab.Parent = myRoot end)
+	state.stab = stab
+
+	local stabRot = Instance.new("BodyAngularVelocity")
+	stabRot.AngularVelocity = Vector3.zero
+	stabRot.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+	stabRot.P = 1e6
+	pcall(function() stabRot.Parent = myRoot end)
+	state.stabRot = stabRot
+
 	local t1 = os.clock()
 	while not state.cleaned do
 		if not myRoot.Parent then break end
 		myRoot.CFrame = state.savedPos
-		myRoot.AssemblyLinearVelocity = Vector3.zero
-		myRoot.AssemblyAngularVelocity = Vector3.zero
 		pcall(function() myChar:PivotTo(state.savedPos) end)
-		if (myRoot.Position - state.savedPos.Position).Magnitude < 25 then break end
+		if (myRoot.Position - state.savedPos.Position).Magnitude < 5 then break end
 		if os.clock() - t1 > 3 then break end
 		task.wait()
 	end
-
-	if myRoot.Parent then
-		myRoot.AssemblyLinearVelocity = Vector3.zero
-		myRoot.AssemblyAngularVelocity = Vector3.zero
-	end
-	task.wait()
 
 	if deadConn then deadConn:Disconnect() end
 	if charGoneConn then charGoneConn:Disconnect() end
