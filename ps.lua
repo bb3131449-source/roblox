@@ -26,11 +26,9 @@ F.PS = {
 	shakes = 0,
 	shakeBase = Vector3.zero,
 
-	FLING_RADIUS = 90,
-	FLING_FORCE = 420,
-	FLING_UP = 0.55,
-	FLING_CHECK_DELAY = 0.22,
-	FLING_MIN_KEEP = 0.45,
+	FLING_RADIUS = 60,
+	FLING_DURATION = 2,
+	FLING_MAX_TARGETS = 10,
 	CAM_FREEZE_TIME = 0.42,
 	CAM_FREEZE_RADIUS = 140,
 	blacklist = {},
@@ -101,101 +99,151 @@ function F.psEnsureHeld(s)
 	return nil
 end
 
-function F.psClaimOwnership(hrp)
-	local ownerBefore = hrp:GetNetworkOwner()
-	pcall(function()
-		if typeof(sethiddenproperty) == "function" then
-			sethiddenproperty(hrp, "PhysicsRepRootPart", hrp)
-		end
-	end)
-	if typeof(setnetworkowner) == "function" then
-		pcall(function() setnetworkowner(hrp, player) end)
+function F.psHasCollision(char)
+	if not char or not char.Parent then return false end
+	for _, p in ipairs(char:GetDescendants()) do
+		if p:IsA("BasePart") and p.CanCollide then return true end
 	end
-	local ownerAfter = hrp:GetNetworkOwner()
-	return ownerAfter, ownerBefore
+	return false
 end
 
-function F.psFlingTarget(plr, pos, radius)
+function F.psFlingOne(plr)
+	local s = ctx.getCurrent()
+	if not F.alive(s) then return false, "self lost" end
+	local myChar, myRoot = s.character, s.rootPart
+
 	local char = plr.Character
-	if not char then return false, "no_char" end
-	local hrp = char:FindFirstChild("HumanoidRootPart")
-	local hum = char:FindFirstChildOfClass("Humanoid")
-	if not hrp or not hum or hum.Health <= 0 then return false, "dead" end
-	local dist = (hrp.Position - pos).Magnitude
-	if dist > radius then return false, "out_of_range" end
+	if not char or not char.Parent then return false, "left" end
+	local tr = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Head")
+	if not tr then return false, "no target root" end
+	local thum = char:FindFirstChildOfClass("Humanoid")
 
-	local owner, ownerBefore = F.psClaimOwnership(hrp)
-	F.cmdLog(("ps %s: owner %s -> %s"):format(
-		plr.Name,
-		tostring(ownerBefore and ownerBefore.Name),
-		tostring(owner and owner.Name)
-	))
+	local startPos = tr.Position
+	local duration = F.PS.FLING_DURATION
+	local t0 = os.clock()
+	local a = 0
 
-	local oldStand = hum.PlatformStand
-	local oldState = hum:GetState()
-	pcall(function() hum.PlatformStand = true end)
-	pcall(function() hum:ChangeState(Enum.HumanoidStateType.Physics) end)
+	repeat
+		if not myRoot.Parent or not tr.Parent then break end
+		if not F.alive(s) then break end
+		if F.PS.blacklist[plr] then break end
 
-	local dir = hrp.Position - pos
-	if dir.Magnitude < 0.5 then dir = Vector3.new(0, 1, 0) end
-	dir = dir.Unit
-	local vel = dir * 15000 + Vector3.new(0, 8000, 0)
+		a += 100
+		local vel = tr.AssemblyLinearVelocity
+		local off = thum and thum.MoveDirection * (vel.Magnitude / 1.25) or Vector3.zero
+		local up = CFrame.new(tr.Position) * (CFrame.new(0, 1.5, 0) + off) * CFrame.Angles(math.rad(a), 0, 0)
+		local dn = CFrame.new(tr.Position) * (CFrame.new(0, -1.5, 0) + off) * CFrame.Angles(math.rad(a), 0, 0)
 
-	pcall(function()
-		hrp.CustomPhysicalProperties = PhysicalProperties.new(0.001, 0, 0, 0, 0)
-	end)
-
-	pcall(function() hrp.AssemblyLinearVelocity = vel end)
-	pcall(function() hrp.Velocity = vel end)
-	pcall(function() hrp.AssemblyAngularVelocity = Vector3.new(3000, 3000, 3000) end)
-
-	local survived = 0
-	for attempt = 1, 8 do
-		RunService.Heartbeat:Wait()
-		if not hrp.Parent then
-			pcall(function() hum.PlatformStand = oldStand end)
-			return true, "gone"
+		for _, cf in ipairs({ up, dn }) do
+			myRoot.CFrame = cf
+			pcall(function() myChar:PivotTo(cf) end)
+			myRoot.AssemblyLinearVelocity = Vector3.new(9e7, 9e8, 9e7)
+			myRoot.AssemblyAngularVelocity = Vector3.new(9e8, 9e8, 9e8)
+			task.wait()
 		end
-		local v = hrp.AssemblyLinearVelocity
-		local mag = v.Magnitude
-		local ownerNow = hrp:GetNetworkOwner()
-		F.cmdLog(("ps %s tick %d: vel=%.0f owner=%s"):format(
-			plr.Name, attempt, mag,
-			tostring(ownerNow and ownerNow.Name)
-		))
-		if mag == mag and mag > 5000 then
-			survived += 1
-		else
-			survived = 0
-			pcall(function() hrp.AssemblyLinearVelocity = vel end)
-		end
-		if survived >= 2 then
-			return true, "flung"
-		end
-	end
+	until os.clock() - t0 > duration
 
-	pcall(function() hum.PlatformStand = oldStand end)
-	pcall(function() hum:ChangeState(oldState) end)
-	return false, "resisted"
+	task.wait(0.25)
+	if not tr.Parent then return true, "gone" end
+	local moved = (tr.Position - startPos).Magnitude
+	if moved > 15 then return true, "flung" end
+	return false, ("resisted %.1f"):format(moved)
 end
 
 function F.psFlingPlayers(pos, radius)
 	local PS = F.PS
-	local flung, blocked = 0, 0
+	local s = ctx.getCurrent()
+	if not F.alive(s) then return end
+	local myChar, myRoot, myHum = s.character, s.rootPart, s.humanoid
+	if not myRoot or not myHum then return end
+
+	local targets = {}
 	for _, plr in ipairs(Players:GetPlayers()) do
 		if plr ~= player and not PS.blacklist[plr] then
-			local ok, status = F.psFlingTarget(plr, pos, radius)
-			if ok then
-				flung += 1
-			elseif status == "resisted" then
-				PS.blacklist[plr] = true
-				blocked += 1
+			local char = plr.Character
+			if char and char.Parent then
+				local hrp = char:FindFirstChild("HumanoidRootPart")
+				if hrp and (hrp.Position - pos).Magnitude <= radius then
+					if F.psHasCollision(char) then
+						table.insert(targets, plr)
+					else
+						PS.blacklist[plr] = true
+						F.cmdLog("ps " .. plr.Name .. ": no collision")
+					end
+				end
 			end
 		end
 	end
-	if flung > 0 or blocked > 0 then
-		F.cmdLog(("ps: flung %d, blacklisted %d"):format(flung, blocked))
+
+	if #targets == 0 then
+		F.cmdLog("ps: no valid targets")
+		return
 	end
+
+	local cam = Workspace.CurrentCamera
+	local sType = cam and cam.CameraType
+	local sSubj = cam and cam.CameraSubject
+	local sCF = cam and cam.CFrame
+	local frozen = myRoot.CFrame * CFrame.new(0, 2, 0)
+	local camConn
+	if cam then
+		cam.CameraType = Enum.CameraType.Scriptable
+		camConn = RunService.RenderStepped:Connect(function()
+			if cam.CameraType == Enum.CameraType.Scriptable then
+				cam.CFrame = frozen
+			end
+		end)
+	end
+
+	local prevFallen = Workspace.FallenPartsDestroyHeight
+	pcall(function() Workspace.FallenPartsDestroyHeight = -9e9 end)
+
+	local stab = Instance.new("BodyVelocity")
+	stab.Velocity = Vector3.zero
+	stab.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+	stab.P = 1e5
+	pcall(function() stab.Parent = myRoot end)
+
+	local savedPos = myRoot.CFrame
+	local seatWas = true
+	pcall(function() seatWas = myHum:GetStateEnabled(Enum.HumanoidStateType.Seated) end)
+	pcall(function() myHum:SetStateEnabled(Enum.HumanoidStateType.Seated, false) end)
+
+	local flung, blocked = 0, 0
+	local MAX = PS.FLING_MAX_TARGETS
+	for _, plr in ipairs(targets) do
+		if flung + blocked >= MAX then break end
+		local ok, res = pcall(F.psFlingOne, plr)
+		if ok and res == true then
+			flung += 1
+			F.cmdLog("ps " .. plr.Name .. ": flung")
+		else
+			PS.blacklist[plr] = true
+			blocked += 1
+			F.cmdLog("ps " .. plr.Name .. ": blocked (" .. tostring(res) .. ")")
+		end
+	end
+
+	local t1 = os.clock()
+	repeat
+		myRoot.CFrame = savedPos
+		myRoot.AssemblyLinearVelocity = Vector3.zero
+		myRoot.AssemblyAngularVelocity = Vector3.zero
+		pcall(function() myChar:PivotTo(savedPos) end)
+		task.wait()
+	until (myRoot.Position - savedPos.Position).Magnitude < 25 or os.clock() - t1 > 3
+
+	pcall(function() stab:Destroy() end)
+	pcall(function() myHum:SetStateEnabled(Enum.HumanoidStateType.Seated, seatWas) end)
+	if camConn then camConn:Disconnect() end
+	if cam then
+		cam.CameraType = sType
+		if sSubj then pcall(function() cam.CameraSubject = sSubj end) end
+		pcall(function() cam.CFrame = sCF end)
+	end
+	pcall(function() Workspace.FallenPartsDestroyHeight = prevFallen end)
+
+	F.cmdLog(("ps: flung %d, blacklisted %d"):format(flung, blocked))
 end
 
 function F.psFreezeCamera(pos, radius)
@@ -268,7 +316,6 @@ function F.psExplode(ground, normal)
 	F.psSound(PS.BOOM_SOUND, PS.BOOM_VOLUME, 0.8, em)
 	F.psSound(PS.BOOM_SOUND, PS.BOOM_VOLUME * 0.8, 0.5, em)
 
-	F.psFreezeCamera(pos, PS.CAM_FREEZE_RADIUS)
 	task.spawn(function()
 		F.safe("ps fling", F.psFlingPlayers, pos, PS.FLING_RADIUS)
 	end)
