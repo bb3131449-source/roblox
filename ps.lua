@@ -29,10 +29,19 @@ F.PS = {
 	FLING_RADIUS = 60,
 	FLING_DURATION = 2,
 	FLING_MAX_TARGETS = 10,
-	CAM_FREEZE_TIME = 0.42,
-	CAM_FREEZE_RADIUS = 140,
 	blacklist = {},
 }
+
+Players.PlayerAdded:Connect(function(plr)
+	plr.CharacterAdded:Connect(function()
+		F.PS.blacklist[plr] = nil
+	end)
+end)
+for _, plr in ipairs(Players:GetPlayers()) do
+	plr.CharacterAdded:Connect(function()
+		F.PS.blacklist[plr] = nil
+	end)
+end
 
 function F.psSound(id, volume, speed, parent)
 	if not id or id == "" then return end
@@ -181,18 +190,11 @@ function F.psFlingPlayers(pos, radius)
 	end
 
 	local cam = Workspace.CurrentCamera
-	local sType = cam and cam.CameraType
-	local sSubj = cam and cam.CameraSubject
-	local sCF = cam and cam.CFrame
-	local frozen = myRoot.CFrame * CFrame.new(0, 2, 0)
-	local camConn
+	local sType, sSubj, sCF
 	if cam then
+		sType, sSubj, sCF = cam.CameraType, cam.CameraSubject, cam.CFrame
 		cam.CameraType = Enum.CameraType.Scriptable
-		camConn = RunService.RenderStepped:Connect(function()
-			if cam.CameraType == Enum.CameraType.Scriptable then
-				cam.CFrame = frozen
-			end
-		end)
+		cam.CFrame = sCF
 	end
 
 	local prevFallen = Workspace.FallenPartsDestroyHeight
@@ -200,9 +202,15 @@ function F.psFlingPlayers(pos, radius)
 
 	local stab = Instance.new("BodyVelocity")
 	stab.Velocity = Vector3.zero
-	stab.MaxForce = Vector3.new(9e9, 9e9, 9e9)
-	stab.P = 1e5
+	stab.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+	stab.P = 1e6
 	pcall(function() stab.Parent = myRoot end)
+
+	local stabRot = Instance.new("BodyAngularVelocity")
+	stabRot.AngularVelocity = Vector3.zero
+	stabRot.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+	stabRot.P = 1e6
+	pcall(function() stabRot.Parent = myRoot end)
 
 	local savedPos = myRoot.CFrame
 	local seatWas = true
@@ -224,6 +232,15 @@ function F.psFlingPlayers(pos, radius)
 		end
 	end
 
+	if cam then
+		cam.CameraType = sType or Enum.CameraType.Custom
+		if sSubj then pcall(function() cam.CameraSubject = sSubj end) end
+		pcall(function() cam.CFrame = sCF end)
+	end
+
+	myRoot.AssemblyLinearVelocity = Vector3.zero
+	myRoot.AssemblyAngularVelocity = Vector3.zero
+
 	local t1 = os.clock()
 	repeat
 		myRoot.CFrame = savedPos
@@ -233,54 +250,16 @@ function F.psFlingPlayers(pos, radius)
 		task.wait()
 	until (myRoot.Position - savedPos.Position).Magnitude < 25 or os.clock() - t1 > 3
 
+	myRoot.AssemblyLinearVelocity = Vector3.zero
+	myRoot.AssemblyAngularVelocity = Vector3.zero
+	task.wait()
+
 	pcall(function() stab:Destroy() end)
+	pcall(function() stabRot:Destroy() end)
 	pcall(function() myHum:SetStateEnabled(Enum.HumanoidStateType.Seated, seatWas) end)
-	if camConn then camConn:Disconnect() end
-	if cam then
-		cam.CameraType = sType
-		if sSubj then pcall(function() cam.CameraSubject = sSubj end) end
-		pcall(function() cam.CFrame = sCF end)
-	end
 	pcall(function() Workspace.FallenPartsDestroyHeight = prevFallen end)
 
 	F.cmdLog(("ps: flung %d, blacklisted %d"):format(flung, blocked))
-end
-
-function F.psFreezeCamera(pos, radius)
-	local cam = Workspace.CurrentCamera
-	if not cam then return end
-	local char = player.Character
-	local hrp = char and char:FindFirstChild("HumanoidRootPart")
-	if not hrp then return end
-	if (hrp.Position - pos).Magnitude > radius then return end
-
-	local oldType = cam.CameraType
-	local oldCF = cam.CFrame
-	local t0 = os.clock()
-	local dur = F.PS.CAM_FREEZE_TIME
-
-	cam.CameraType = Enum.CameraType.Scriptable
-
-	local conn
-	conn = RunService.RenderStepped:Connect(function()
-		local e = os.clock() - t0
-		if e >= dur then
-			if conn then conn:Disconnect() end
-			if cam then cam.CameraType = oldType end
-			return
-		end
-		local k = e / dur
-		local amp = 1.1 * (1 - k) * (1 - k)
-		cam.CFrame = oldCF * CFrame.new(
-			(math.random() - 0.5) * amp,
-			(math.random() - 0.5) * amp,
-			(math.random() - 0.5) * amp
-		) * CFrame.Angles(
-			(math.random() - 0.5) * amp * 0.08,
-			(math.random() - 0.5) * amp * 0.08,
-			(math.random() - 0.5) * amp * 0.08
-		)
-	end)
 end
 
 function F.psExplode(ground, normal)
@@ -542,8 +521,10 @@ function F.psBomb(bin, folder, clone, startCF, restCF, ground, normal)
 	}, folder)
 
 	local function pivot(cf)
-		clone:PivotTo(cf)
-		glow.Position = (cf * MUZZLE_OFFSET).Position
+		pcall(function()
+			clone:PivotTo(cf)
+			glow.Position = (cf * MUZZLE_OFFSET).Position
+		end)
 	end
 
 	local startPos, startRot, restRot = startCF.Position, startCF.Rotation, restCF.Rotation
@@ -700,5 +681,15 @@ commands.ps = function()
 		PS.busy = false
 		if not ok then F.cmdLog("ps error: " .. tostring(err)) end
 	end)
+end
+
+commands.psunblock = function()
+	local PS = F.PS
+	local n = 0
+	for plr in pairs(PS.blacklist) do
+		PS.blacklist[plr] = nil
+		n += 1
+	end
+	F.cmdLog(("ps: unblocked %d"):format(n))
 end
 end
