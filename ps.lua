@@ -102,30 +102,17 @@ function F.psEnsureHeld(s)
 end
 
 function F.psClaimOwnership(hrp)
-	local claimed = false
-
+	local ownerBefore = hrp:GetNetworkOwner()
 	pcall(function()
 		if typeof(sethiddenproperty) == "function" then
 			sethiddenproperty(hrp, "PhysicsRepRootPart", hrp)
-			if typeof(gethiddenproperty) == "function" then
-				local check = gethiddenproperty(hrp, "PhysicsRepRootPart")
-				if check == hrp then claimed = true end
-			else
-				claimed = true
-			end
 		end
 	end)
-
-	if not claimed then
-		pcall(function()
-			if typeof(setnetworkowner) == "function" then
-				setnetworkowner(hrp, player)
-				claimed = true
-			end
-		end)
+	if typeof(setnetworkowner) == "function" then
+		pcall(function() setnetworkowner(hrp, player) end)
 	end
-
-	return claimed
+	local ownerAfter = hrp:GetNetworkOwner()
+	return ownerAfter, ownerBefore
 end
 
 function F.psFlingTarget(plr, pos, radius)
@@ -137,62 +124,59 @@ function F.psFlingTarget(plr, pos, radius)
 	local dist = (hrp.Position - pos).Magnitude
 	if dist > radius then return false, "out_of_range" end
 
-	local claimed = F.psClaimOwnership(hrp)
-	if not claimed then return false, "no_ownership" end
+	local owner, ownerBefore = F.psClaimOwnership(hrp)
+	F.cmdLog(("ps %s: owner %s -> %s"):format(
+		plr.Name,
+		tostring(ownerBefore and ownerBefore.Name),
+		tostring(owner and owner.Name)
+	))
 
-	-- дай движку кадр принять ownership, иначе клиентские изменения
-	-- физики перетрутся серверной репликацией в тот же тик
-	RunService.Heartbeat:Wait()
-
-	-- near-zero масса и трение: любой импульс швыряет тело
-	pcall(function()
-		hrp.CustomPhysicalProperties = PhysicalProperties.new(0.001, 0.001, 0.001, 0.001, 0.001)
-	end)
+	local oldStand = hum.PlatformStand
+	local oldState = hum:GetState()
+	pcall(function() hum.PlatformStand = true end)
+	pcall(function() hum:ChangeState(Enum.HumanoidStateType.Physics) end)
 
 	local dir = hrp.Position - pos
 	if dir.Magnitude < 0.5 then dir = Vector3.new(0, 1, 0) end
 	dir = dir.Unit
-	local vel = dir * 50000 + Vector3.new(0, 25000, 0)
+	local vel = dir * 15000 + Vector3.new(0, 8000, 0)
+
+	pcall(function()
+		hrp.CustomPhysicalProperties = PhysicalProperties.new(0.001, 0, 0, 0, 0)
+	end)
+
+	pcall(function() hrp.AssemblyLinearVelocity = vel end)
+	pcall(function() hrp.Velocity = vel end)
+	pcall(function() hrp.AssemblyAngularVelocity = Vector3.new(3000, 3000, 3000) end)
 
 	local survived = 0
-	for attempt = 1, 6 do
-		if not hrp.Parent then return true, "gone" end
-		pcall(function() hrp.AssemblyLinearVelocity = vel end)
-		pcall(function() hrp.Velocity = vel end)
-		pcall(function() hrp.AssemblyAngularVelocity = Vector3.new(5000, 5000, 5000) end)
+	for attempt = 1, 8 do
 		RunService.Heartbeat:Wait()
+		if not hrp.Parent then
+			pcall(function() hum.PlatformStand = oldStand end)
+			return true, "gone"
+		end
 		local v = hrp.AssemblyLinearVelocity
 		local mag = v.Magnitude
-		if mag == mag and mag > 10000 then
+		local ownerNow = hrp:GetNetworkOwner()
+		F.cmdLog(("ps %s tick %d: vel=%.0f owner=%s"):format(
+			plr.Name, attempt, mag,
+			tostring(ownerNow and ownerNow.Name)
+		))
+		if mag == mag and mag > 5000 then
 			survived += 1
 		else
 			survived = 0
+			pcall(function() hrp.AssemblyLinearVelocity = vel end)
 		end
 		if survived >= 2 then
 			return true, "flung"
 		end
 	end
 
+	pcall(function() hum.PlatformStand = oldStand end)
+	pcall(function() hum:ChangeState(oldState) end)
 	return false, "resisted"
-end
-
-function F.psFlingPlayers(pos, radius)
-	local PS = F.PS
-	local flung, blocked = 0, 0
-	for _, plr in ipairs(Players:GetPlayers()) do
-		if plr ~= player and not PS.blacklist[plr] then
-			local ok, status = F.psFlingTarget(plr, pos, radius)
-			if ok then
-				flung += 1
-			elseif status == "resisted" then
-				PS.blacklist[plr] = true
-				blocked += 1
-			end
-		end
-	end
-	if flung > 0 or blocked > 0 then
-		F.cmdLog(("ps: flung %d, blacklisted %d"):format(flung, blocked))
-	end
 end
 
 function F.psFlingPlayers(pos, radius)
